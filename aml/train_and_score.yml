@@ -1,0 +1,29 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+display_name: titanic-train-and-score
+experiment_name: titanic-workshop
+
+code: ..
+
+command: >
+  bash -lc "set -euxo pipefail;
+  python -m pip install --no-cache-dir pandas==2.2.2 scikit-learn==1.4.2 mlflow==2.14.1 azureml-mlflow;
+  python src/train.py --data ${{inputs.data}} --model-dir ${{outputs.model}};
+  python src/score.py --model ${{outputs.model}} --data ${{inputs.data}} --out ${{outputs.scored}} --rows 200;"
+
+environment:
+  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+
+compute: azureml:cpu-cluster
+
+inputs:
+  data:
+    type: uri_file
+    path: azureml:data-titanic:1
+
+outputs:
+  model:
+    type: uri_folder
+    mode: upload
+  scored:
+    type: uri_folder
+    mode: upload

@@ -1,0 +1,26 @@
+name: AML Nuke RG
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: "Exact RG to delete (e.g., rg-ml-user007)"
+        required: true
+      confirm:
+        description: "Type NUKE to confirm"
+        required: true
+        default: "ARE YOU SURE?"
+
+jobs:
+  nuke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Safety check
+        shell: bash
+        run: '[ "${{ github.event.inputs.confirm }}" = "NUKE" ]'
+      - name: Delete RG
+        shell: bash
+        run: az group delete -n "${{ github.event.inputs.resource_group }}" -y --no-wait

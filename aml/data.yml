@@ -1,0 +1,6 @@
+$schema: https://azuremlschemas.azureedge.net/latest/data.schema.json
+name: data-titanic
+version: 1
+description: "Titanic CSV as an AML Data asset"
+type: uri_file
+path: ../data/Titanic-Dataset.csv

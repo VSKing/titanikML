@@ -1,0 +1,106 @@
+name: AML Train_and_Score
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: "Unique short id (jm01, ms02, ...)"
+        required: true
+        default: "user007"
+      compute_policy:
+        description: "Post-run compute policy"
+        required: true
+        type: choice
+        options:
+          - warm
+          - cold
+        default: "warm"
+
+env:
+  LOCATION: polandcentral
+  COMPUTE: cpu-cluster
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      RG: rg-ml-${{ inputs.alias }}
+      WS: mlw-${{ inputs.alias }}
+      DATA_ASSET_NAME: data-titanic
+      DATA_ASSET_VERSION: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install/Update Azure ML CLI
+        run: |
+          az extension add -n ml -y || true
+          az configure --defaults location=${{ env.LOCATION }}
+
+      - name: Ensure Resource Group + Workspace (Poland Central)
+        run: |
+          az group create -n "${{ env.RG }}" -l "${{ env.LOCATION }}"
+          az ml workspace create -g "${{ env.RG }}" -l "${{ env.LOCATION }}" -n "${{ env.WS }}" || true
+          az configure --defaults group=${{ env.RG }} workspace=${{ env.WS }}
+
+      - name: Ensure compute (keep one node warm)
+        run: |
+          az ml compute show --name ${{ env.COMPUTE }} >/dev/null 2>&1 || \
+          az ml compute create --name ${{ env.COMPUTE }} --type amlcompute \
+            --min-instances 1 --max-instances 1 --size Standard_F2s_v2 \
+            --idle-time-before-scale-down 300
+          az ml compute update --name ${{ env.COMPUTE }} \
+            --min-instances 1 --max-instances 1 --idle-time-before-scale-down 300
+
+      - name: Ensure Data asset (uri_file)
+        run: |
+          az ml data show -n "${{ env.DATA_ASSET_NAME }}" -v "${{ env.DATA_ASSET_VERSION }}" >/dev/null 2>&1 || \
+          az ml data create --name "${{ env.DATA_ASSET_NAME }}" --version "${{ env.DATA_ASSET_VERSION }}" \
+            --type uri_file --path "data/Titanic-Dataset.csv"
+
+      - name: Submit Train and Score
+        id: submit
+        run: |
+          JOB=$(az ml job create --file aml/train_and_score.yml --query name -o tsv)
+          echo "JOB=$JOB" >> $GITHUB_OUTPUT
+
+      - name: Stream logs
+        run: az ml job stream -n "${{ steps.submit.outputs.JOB }}"
+
+      - name: Download predictions
+        run: |
+          mkdir -p artifacts
+          az ml job download -n "${{ steps.submit.outputs.JOB }}" --output-name scored --download-path artifacts
+          ls artifacts
+
+      - name: Upload artifact (preds + metrics)
+        uses: actions/upload-artifact@v4
+        with:
+          name: scored_${{ inputs.alias }}
+          path: artifacts
+
+      - name: Post-run compute policy (warm | cold)
+        if: always()
+        shell: bash
+        env:
+          POLICY: ${{ github.event.inputs.compute_policy }}
+        run: |
+          set -euo pipefail
+          case "${POLICY}" in
+            warm)
+              az ml compute update --name ${{ env.COMPUTE }} \
+                --min-instances 1 --max-instances 2 --idle-time-before-scale-down 900 || true
+              ;;
+            cold)
+              az ml compute update --name ${{ env.COMPUTE }} \
+                --min-instances 0 --max-instances 1 --idle-time-before-scale-down 120 || true
+              ;;
+            *)
+              echo "Unknown policy '${POLICY}'. Leaving compute as-is."
+              ;;
+          esac
